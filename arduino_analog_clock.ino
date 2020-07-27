@@ -4,9 +4,6 @@
 #include <Servo.h>
 #include <EEPROM.h>
 
-// LED Display Code from:
-// https://playground.arduino.cc/Main/LedControl/
-
 // example RTC code modified from :
 // https://github.com/Makuna/Rtc/blob/master/examples/DS1307_Simple/DS1307_Simple.ino
 
@@ -14,18 +11,18 @@
 // too.
 #define PIN_BLINKY_LED 13
 
-// Button setup. create button UI state variables
+// Light sensor photo resistor
+#define PIN_LIGHT_SENSOR A0
+
+// Button pin setup. We create button UI state variables below
 #define PIN_BUTTON_UP 4
 #define PIN_BUTTON_DOWN 2
 #define PIN_BUTTON_SELECT 3
 
-#define PIN_SERVO_HOUR 6
-#define PIN_SERVO_MINUTE 5
-#define SERVO_MIN 1
-#define SERVO_MAX 180
-#define SERVO_MIN_DEFAULT 20
-#define SERVO_MAX_DEFAULT 170
+// LED Display Code from:
+// https://playground.arduino.cc/Main/LedControl/
 
+// LED Controller pins
 #define PIN_LED_CONTROLLER_DATA 10
 #define PIN_LED_CONTROLLER_CLK 9
 #define PIN_LED_CONTROLLER_LOAD 8
@@ -38,6 +35,15 @@
 #define LOOP_PERIOD 10
 #define COLON_BLINK_TIME (100 / LOOP_PERIOD)
 #define BUTTON_HOLD_TIME (1000 / LOOP_PERIOD)
+
+// Servo pins and constants
+#define PIN_SERVO_HOUR 6
+#define PIN_SERVO_MINUTE 5
+
+#define SERVO_MIN 1
+#define SERVO_MAX 180
+#define SERVO_MIN_DEFAULT 20
+#define SERVO_MAX_DEFAULT 170
 
 // Configuration information related to an individual servo. We 
 // store a min and max value.
@@ -226,10 +232,14 @@ void PrintTime(const RtcDateTime *time) {
   }
   Serial.print(second, DEC);
   if (pm) {
-    Serial.println(" pm");
+    Serial.print(" pm");
   } else {
-    Serial.println(" am");
+    Serial.print(" am");
   }
+  Serial.print(" light:");
+  Serial.print(analogRead(PIN_LIGHT_SENSOR), DEC);
+
+  Serial.println("");
 }
 
 // Writes the given configuration object into EEPROM, along with a checksum so
@@ -473,6 +483,9 @@ void loop() {
     if (config.display_brightness > LED_BRIGHTNESS_MIN) {
       config.display_brightness--;
     }
+  }
+  if (select_button.just_pressed()) {
+    Serial.println("select");
   }
   if (led_brightness_old != config.display_brightness) {
     display.setIntensity(0, config.display_brightness);

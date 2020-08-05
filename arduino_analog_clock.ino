@@ -1,4 +1,4 @@
-#include "LedControl.h"
+#include <LedControl.h>
 #include <Wire.h>
 #include <RtcDS1307.h>
 #include <Servo.h>
@@ -7,43 +7,48 @@
 // example RTC code modified from :
 // https://github.com/Makuna/Rtc/blob/master/examples/DS1307_Simple/DS1307_Simple.ino
 
-// Pin 13 has an LED connected on most Arduino boards.  The clock board has one
-// too.
-#define PIN_BLINKY_LED 13
+// LED Display Code from:
+// https://playground.arduino.cc/Main/LedControl/
 
-// Light sensor photo resistor
-#define PIN_LIGHT_SENSOR A0
+// Pin 13 has an LED connected on most Arduino boards, including this clock
+#define PIN_BLINKY_LED    13
+
+// System constants
+#define LOOP_PERIOD       10
+#define COLON_BLINK_TIME (100 / LOOP_PERIOD)
+#define BUTTON_HOLD_TIME (1000 / LOOP_PERIOD)
+
+// LED Controller pins
+#define PIN_LED_CONTROLLER_DATA   10
+#define PIN_LED_CONTROLLER_CLK    9
+#define PIN_LED_CONTROLLER_LOAD   8
+
+#define LED_BRIGHTNESS_MIN        0
+#define LED_BRIGHTNESS_MAX        16
+#define LED_BRIGHTNESS_DEFAULT    6
+
+// Servo pins and constants
+#define PIN_SERVO_HOUR            6
+#define PIN_SERVO_MINUTE          5
+
+#define SERVO_MIN         1
+#define SERVO_MAX         180
+#define SERVO_MIN_DEFAULT 20
+#define SERVO_MAX_DEFAULT 170
 
 // Button pin setup. We create button UI state variables below
 #define PIN_BUTTON_UP 4
 #define PIN_BUTTON_DOWN 2
 #define PIN_BUTTON_SELECT 3
 
-// LED Display Code from:
-// https://playground.arduino.cc/Main/LedControl/
+// Light sensor photo resistor
+#define PIN_LIGHT_SENSOR            A0
 
-// LED Controller pins
-#define PIN_LED_CONTROLLER_DATA 10
-#define PIN_LED_CONTROLLER_CLK 9
-#define PIN_LED_CONTROLLER_LOAD 8
+#define LIGHT_SENSOR_AMBIENT        950
+#define LIGHT_SENSOR_GAIN           100
 
-#define LED_BRIGHTNESS_MIN 0
-#define LED_BRIGHTNESS_MAX 16
-#define LED_BRIGHTNESS_DEFAULT 6
+#define LIGHT_SENSOR_LPF            100.0
 
-#define LOOP_PERIOD 10
-#define LOOP_PERIOD 10
-#define COLON_BLINK_TIME (100 / LOOP_PERIOD)
-#define BUTTON_HOLD_TIME (1000 / LOOP_PERIOD)
-
-// Servo pins and constants
-#define PIN_SERVO_HOUR 6
-#define PIN_SERVO_MINUTE 5
-
-#define SERVO_MIN 1
-#define SERVO_MAX 180
-#define SERVO_MIN_DEFAULT 20
-#define SERVO_MAX_DEFAULT 170
 
 // Configuration information related to an individual servo. We 
 // store a min and max value.
@@ -79,6 +84,58 @@ struct SavedConfiguration {
   Configuration config;
   uint16_t checksum;
 };
+
+// Fletcher16 is a simple checksum algorithm which is sensitive to
+// byte ordering.
+uint16_t Fletcher16(const void *p, size_t size) {
+  uint16_t sum1 = 0;
+  uint16_t sum2 = 0;
+  const uint8_t *data = static_cast<const uint8_t *>(p);
+
+  for (int i = 0; i < size; ++i) {
+    sum1 = (sum1 + data[i]) % 255;
+    sum2 = (sum2 + sum1) % 255;
+  }
+
+  return (sum1 << 8) | (sum2 & 0xff);
+}
+
+// Writes the given configuration object into EEPROM, along with a checksum so
+// that we can ensure it's valid when it is read out again.
+void WriteConfigurationToEeprom(const Configuration &config) {
+  SavedConfiguration serialized;
+  serialized.config = config;
+  serialized.checksum = Fletcher16(&config, sizeof(Configuration));
+
+  const uint8_t *data = reinterpret_cast<const uint8_t *>(&serialized);
+  for (int i = 0; i < sizeof(serialized); ++i) {
+    EEPROM.write(i, data[i]);
+  }
+}
+
+// Read a serialized configuration object out of EEPROM, and verify the checksum
+// is correct. If the checksum is not correct, this may be due to EEPROM
+// corruption or a fresh IC which has never had any configuration stored.
+bool LoadConfigurationFromEeprom(Configuration *config) {
+  SavedConfiguration serialized;
+  uint8_t *data = reinterpret_cast<uint8_t *>(&serialized);
+  for (int i = 0; i < sizeof(serialized); ++i) {
+    data[i] = EEPROM.read(i);
+  }
+
+  const uint16_t checksum = Fletcher16(&serialized.config, sizeof(Configuration));
+  if (checksum != serialized.checksum) {
+    return false;
+  }
+  *config = serialized.config;
+  return true;
+}
+
+// Factory calibration stored in non-volatile memory. We keep an in-memory
+// working copy here, and serialize it to EEPROM when there is a change.
+Configuration config;
+
+
 
 
 // The button object holds state related to an individual button, and provides
@@ -124,20 +181,27 @@ struct Button {
   bool held() const { return (held_count == BUTTON_HOLD_TIME); }
 };
 
-// Fletcher16 is a simple checksum algorithm which is sensitive to
-// byte ordering.
-uint16_t Fletcher16(const void *p, size_t size) {
-  uint16_t sum1 = 0;
-  uint16_t sum2 = 0;
-  const uint8_t *data = static_cast<const uint8_t *>(p);
+// Button objects to scan and debounce the 3 buttons.
+Button select_button;
+Button up_button;
+Button down_button;
 
-  for (int i = 0; i < size; ++i) {
-    sum1 = (sum1 + data[i]) % 255;
-    sum2 = (sum2 + sum1) % 255;
-  }
 
-  return (sum1 << 8) | (sum2 & 0xff);
+// Light sensor
+float light_sensor_lpf = LIGHT_SENSOR_AMBIENT;
+
+void light_sensor_update() {
+  int light_sensor_val = analogRead(PIN_LIGHT_SENSOR);
+  light_sensor_lpf = ((float)light_sensor_val + (light_sensor_lpf * (LIGHT_SENSOR_LPF - 1.0))) / LIGHT_SENSOR_LPF;
 }
+
+int brightness_adjust() {
+  // compute the light sensor brightness adjustment
+  float brightness_adjust;
+  brightness_adjust = (light_sensor_lpf - (float)(LIGHT_SENSOR_AMBIENT)) / (float)(LIGHT_SENSOR_GAIN) ;
+  return (int)brightness_adjust;
+}
+
 
 // Create a new LedControl object.
 // We use pins 8, 9 and 10 on the Arduino for the SPI interface
@@ -197,6 +261,7 @@ void DisplayTime(const RtcDateTime *time) {
   display.setDigit(0, 3, minute % 10, false);
 }
 
+
 // Formats and prints the given time to the UART.
 void PrintTime(const RtcDateTime *time) {
   uint8_t hour = time->Hour();
@@ -236,55 +301,38 @@ void PrintTime(const RtcDateTime *time) {
   } else {
     Serial.print(" am");
   }
-  Serial.print(" light:");
-  Serial.print(analogRead(PIN_LIGHT_SENSOR), DEC);
+  Serial.print("  light:");
+  //Serial.print(analogRead(PIN_LIGHT_SENSOR), DEC);
+  //Serial.print(",");
+  Serial.print(light_sensor_lpf, 1);
+  Serial.print(",");
+  Serial.print(brightness_adjust());
+
+  if (up_button.just_pressed()) {
+    Serial.print("  up");
+  } else {
+    Serial.print("    ");
+  }
+  if (select_button.just_pressed()) {
+    Serial.print(" select");
+  } else {
+    Serial.print("       ");
+  }
+  if (down_button.just_pressed()) {
+    Serial.print(" down");
+  } else {
+    Serial.print("     ");
+  }
 
   Serial.println("");
 }
 
-// Writes the given configuration object into EEPROM, along with a checksum so
-// that we can ensure it's valid when it is read out again.
-void WriteConfigurationToEeprom(const Configuration &config) {
-  SavedConfiguration serialized;
-  serialized.config = config;
-  serialized.checksum = Fletcher16(&config, sizeof(Configuration));
 
-  const uint8_t *data = reinterpret_cast<const uint8_t *>(&serialized);
-  for (int i = 0; i < sizeof(serialized); ++i) {
-    EEPROM.write(i, data[i]);
-  }
-}
 
-// Read a serialized configuration object out of EEPROM, and verify the checksum
-// is correct. If the checksum is not correct, this may be due to EEPROM
-// corruption or a fresh IC which has never had any configuration stored.
-bool LoadConfigurationFromEeprom(Configuration *config) {
-  SavedConfiguration serialized;
-  uint8_t *data = reinterpret_cast<uint8_t *>(&serialized);
-  for (int i = 0; i < sizeof(serialized); ++i) {
-    data[i] = EEPROM.read(i);
-  }
-
-  const uint16_t checksum = Fletcher16(&serialized.config, sizeof(Configuration));
-  if (checksum != serialized.checksum) {
-    return false;
-  }
-  *config = serialized.config;
-  return true;
-}
-
-// Button objects to scan and debounce the 3 buttons.
-Button select_button;
-Button up_button;
-Button down_button;
 
 // Two servo objects to control the servo positions.
 Servo servo_hour;
 Servo servo_minute;
-
-// Factory calibration stored in non-volatile memory. We keep an in-memory
-// working copy here, and serialize it to EEPROM when there is a change.
-Configuration config;
 
 // Writes the given stage ID and 8 bit value to the LED display, used for
 // showing which step of the calibration process we are on.
@@ -454,6 +502,7 @@ void UpdateServos(const Configuration &config, const RtcDateTime &time) {
 // we make it global so the values persist between loop iterations.
 uint8_t second_old = 0;
 uint16_t colon_blink_counter = 0;
+bool skipPrint = false;
 
 // Arduino provides a main() function that will repeatedly call loop() in a loop
 // as fast as possible. We can fill loop() with code that we want to run
@@ -464,6 +513,7 @@ void loop() {
   up_button.Update();
   down_button.Update();
   select_button.Update();
+  light_sensor_update();
 
   // Holding down the select button triggers the servo calibration routine.
   if (select_button.held()) {
@@ -472,33 +522,43 @@ void loop() {
 
   // Check for display brightness updates, and commit changes to EEPROM.
   const uint8_t led_brightness_old = config.display_brightness;
+  RtcDateTime now = Rtc.GetDateTime();
   if (up_button.just_pressed()) {
-    Serial.println("up");
+    //Serial.println("up");
+    PrintTime(&now);
+    skipPrint = true;
     if (config.display_brightness < LED_BRIGHTNESS_MAX) {
       config.display_brightness++;
     }
   }
   if (down_button.just_pressed()) {
-    Serial.println("down");
+    //Serial.println("down");
+    PrintTime(&now);
+    skipPrint = true;
     if (config.display_brightness > LED_BRIGHTNESS_MIN) {
       config.display_brightness--;
     }
   }
   if (select_button.just_pressed()) {
-    Serial.println("select");
+    //Serial.println("select");
+    PrintTime(&now);
+    skipPrint = true;
   }
   if (led_brightness_old != config.display_brightness) {
-    display.setIntensity(0, config.display_brightness);
+    //display.setIntensity(0, config.display_brightness);
     WriteConfigurationToEeprom(config);
   }
+  display.setIntensity(0, constrain(config.display_brightness + brightness_adjust(), LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX));
 
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.
-  RtcDateTime now = Rtc.GetDateTime();
   if (now.Second() != second_old) {
-    DisplayTime(&now);
-    PrintTime(&now);
     UpdateServos(config, now);
+    DisplayTime(&now);
+    if (!skipPrint) {
+      PrintTime(&now);
+    }
+    skipPrint = false;
     colon_blink_counter = COLON_BLINK_TIME;
   }
   second_old = now.Second();

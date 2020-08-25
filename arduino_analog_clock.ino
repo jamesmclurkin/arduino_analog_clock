@@ -396,9 +396,7 @@ void setup() {
   Rtc.Begin();
 
   // Setup and check the time on the RTC clock
-  RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
-  PrintTime(compiled);
-
+  RtcDateTime time_compiled = RtcDateTime(__DATE__, __TIME__);
   if (!Rtc.IsDateTimeValid()) {
     if (Rtc.LastError() != 0) {
       // we have a communications error
@@ -416,7 +414,7 @@ void setup() {
       // it will also reset the valid flag internally unless the Rtc device is
       // having an issue
 
-      Rtc.SetDateTime(compiled);
+      Rtc.SetDateTime(time_compiled);
     }
   }
 
@@ -426,27 +424,28 @@ void setup() {
   }
 
   Serial.print("Compile time=");
-  Serial.print(uint32_t(compiled), DEC);
+  Serial.print(uint32_t(time_compiled), DEC);
   Serial.print(" :");
-  PrintTime(&compiled);
+  PrintTime(&time_compiled);
 
-  RtcDateTime now = Rtc.GetDateTime();
+  RtcDateTime time_now = Rtc.GetDateTime();
   Serial.print("    RTC time=");
-  Serial.print(uint32_t(now), DEC);
+  Serial.print(uint32_t(time_now), DEC);
   Serial.print(" :");
-  PrintTime(&now);
+  PrintTime(&time_now);
 
-  // uncomment this line to force the RTC to take the compiled time
-  // Rtc.SetDateTime(compiled);
-  if (uint32_t(now) < uint32_t(compiled)) {
+  // figure out if we should keep the RTC time or take the compiled time
+  if (uint32_t(time_now) < uint32_t(time_compiled)) {
     Serial.println("RTC is older than compile time!  (Updating DateTime)");
-    Rtc.SetDateTime(compiled);
-  } else if (uint32_t(now) > uint32_t(compiled)) {
+    Rtc.SetDateTime(time_compiled);
+  } else if (uint32_t(time_now) > uint32_t(time_compiled)) {
     Serial.println("RTC is newer than compile time. (this is expected)");
-  } else if (uint32_t(now) == uint32_t(compiled)) {
+  } else if (uint32_t(time_now) == uint32_t(time_compiled)) {
     Serial.println(
         "RTC is the same as compile time! (not expected but all is fine)");
   }
+  // uncomment this line to force the RTC to take the compiled time
+  //Rtc.SetDateTime(time_compiled);
 
   // disable the square wave output
   Rtc.SetSquareWavePin(DS1307SquareWaveOut_Low);
@@ -470,6 +469,23 @@ void setup() {
   select_button.Init(PIN_BUTTON_SELECT);
 }
 
+#define SERVO_SPEED_MAX  1
+int hour_pos_current = 0;
+int minute_pos_current = 0;
+
+int ServoVelocityLimit(int current_pos, int goal_pos) {
+  int diff = abs(goal_pos - current_pos);
+  if (diff <= SERVO_SPEED_MAX) {
+    current_pos = goal_pos;
+  } else if (goal_pos > current_pos) {
+    current_pos += SERVO_SPEED_MAX;
+  } else if (goal_pos < current_pos) {
+    current_pos -= SERVO_SPEED_MAX;
+  }
+  return current_pos;
+}
+
+
 // Displays the given time on the minute and second hands, using pre-determined
 // minimum and maximum servo values derived from our calibration process.
 void UpdateServos(const Configuration &config, const RtcDateTime &time) {
@@ -482,20 +498,21 @@ void UpdateServos(const Configuration &config, const RtcDateTime &time) {
 
   // Scale the 720 different possible minutes in a 12 hour span to the servo
   // values.
-  int hour_pos = hour * 60 + (int)minute;
-  hour_pos =
-      map(hour_pos, 0, 720, config.hour_servo.min, config.hour_servo.max);
-  hour_pos = constrain(hour_pos, SERVO_MIN, SERVO_MAX);
-  servo_hour.write(hour_pos);
+  int hour_pos_goal = hour * 60 + (int)minute;
+  hour_pos_goal =
+      map(hour_pos_goal, 0, 720, config.hour_servo.min, config.hour_servo.max);
+  hour_pos_goal = constrain(hour_pos_goal, SERVO_MIN, SERVO_MAX);
+  hour_pos_current = ServoVelocityLimit(hour_pos_current, hour_pos_goal);
+  servo_hour.write(hour_pos_current);
 
   // Scale the 60 different possible minutes in a 1 hour span to the servo
   // values.
-  int minute_pos =
+  int minute_pos_goal =
       map(minute, 0, 60, config.minute_servo.min, config.minute_servo.max);
-  minute_pos = constrain(minute_pos, SERVO_MIN, SERVO_MAX);
-  servo_minute.write(minute_pos);
+  minute_pos_goal = constrain(minute_pos_goal, SERVO_MIN, SERVO_MAX);
+  minute_pos_current = ServoVelocityLimit(minute_pos_current, minute_pos_goal);
+  servo_minute.write(minute_pos_current);
 }
-
 
 // State used in the loop, which must be global because of the way arduino
 // exposes the loop() function. Rather than declaring this on the stack in main
@@ -503,6 +520,9 @@ void UpdateServos(const Configuration &config, const RtcDateTime &time) {
 uint8_t second_old = 0;
 uint16_t colon_blink_counter = 0;
 bool skipPrint = false;
+
+#define SERVO_UPDATE_PERIODS 2
+uint8_t update_servo_counter = SERVO_UPDATE_PERIODS;
 
 // Arduino provides a main() function that will repeatedly call loop() in a loop
 // as fast as possible. We can fill loop() with code that we want to run
@@ -552,8 +572,12 @@ void loop() {
 
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.
-  if (now.Second() != second_old) {
+  update_servo_counter--;
+  if(update_servo_counter == 0) {
+    update_servo_counter = SERVO_UPDATE_PERIODS;
     UpdateServos(config, now);
+  };
+  if (now.Second() != second_old) {
     DisplayTime(&now);
     if (!skipPrint) {
       PrintTime(&now);

@@ -495,6 +495,11 @@ void UpdateServos(const Configuration &config, const RtcDateTime &time) {
   if (hour > 12) {
     hour -= 12;
   }
+  // hour servo homes at noon & midnight
+  if (hour == 12) {
+    hour = 0;
+  }
+
 
   // Scale the 720 different possible minutes in a 12 hour span to the servo
   // values.

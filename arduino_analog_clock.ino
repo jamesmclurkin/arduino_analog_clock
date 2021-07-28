@@ -10,6 +10,9 @@
 // LED Display Code from:
 // https://playground.arduino.cc/Main/LedControl/
 
+// Daylight Savings time calculation:
+// https://stackoverflow.com/questions/5590429/calculating-daylight-saving-time-from-only-date
+
 // Pin 13 has an LED connected on most Arduino boards, including this clock
 #define PIN_BLINKY_LED    13
 
@@ -63,6 +66,7 @@ struct Configuration {
   ServoConfig hour_servo;
   ServoConfig minute_servo;
   uint8_t display_brightness;
+  bool DST_when_time_set;
 
   // Returns a sensible set of default configuration, for use only on fresh
   // boards where we've never performed a calibration, or if the calibration is
@@ -74,6 +78,7 @@ struct Configuration {
     c.minute_servo.min = SERVO_MIN_DEFAULT;
     c.minute_servo.max = SERVO_MAX_DEFAULT;
     c.display_brightness = LED_BRIGHTNESS_DEFAULT;
+    c.DST_when_time_set = false;
     return c;
   }
 };
@@ -134,7 +139,6 @@ bool LoadConfigurationFromEeprom(Configuration *config) {
 // Factory calibration stored in non-volatile memory. We keep an in-memory
 // working copy here, and serialize it to EEPROM when there is a change.
 Configuration config;
-
 
 
 
@@ -237,20 +241,73 @@ const char *DayOfWeekString(int DoW) {
   }
 }
 
-// Formats and writes the given time to the LED display.
-void DisplayTime(const RtcDateTime *time) {
-  // read the current time
-  uint8_t hour = time->Hour();
-  uint8_t minute = time->Minute();
+
+bool IsDST(const RtcDateTime *time) {
+  int day = time->Day();
+  int month = time->Month();
+  int dow = time->DayOfWeek();
+
+  //January, february, and december are out.
+  if (month < 3 || month > 11) { return false; }
+  //April to October are in
+  if (month > 3 && month < 11) { return true; }
+  int previousSunday = day - dow;
+  //In march, we are DST if our previous sunday was on or after the 8th.
+  if (month == 3) { return previousSunday >= 8; }
+  //In november we must be before the first sunday to be dst.
+  //That means the previous sunday must be before the 1st.
+  return previousSunday <= 0;
+}
+
+
+uint8_t GetAdjustedHour(const RtcDateTime *timePtr, bool *pmPtr) {
+  int8_t hour = (int8_t)timePtr->Hour();
+
+  // handle DST silliness
+  bool DSTNow = IsDST(timePtr);
+  //Serial.print("(DST");
+  if (DSTNow != config.DST_when_time_set) {
+    //Serial.print("a");
+    if (DSTNow) {
+      // we are in DST, but the time on the RTC is standard time.  Advance one hour
+      hour++;
+      //Serial.print("b");
+    } else {
+      // we are in standard time, but the time on the RTC is DST.  Rewind one hour
+      hour--;
+      //Serial.print("c");
+    }
+  }
+  //Serial.print(")");
+
+  //wrap the hour around 24
+  if (hour < 0) {
+    hour += 24;
+  }
+  if (hour >23) {
+    hour -= 24;
+  }
 
   // handle 12-hour time silliness
+  *pmPtr = false;
   if (hour == 0) {
     hour = 12;
-  }
-  if (hour > 12) {
+  } else if (hour > 12) {
     hour = hour - 12;
+    *pmPtr = true;
   }
-  // Hide the hour 10s place if the hour is less than 10
+  return (uint8_t)hour;
+}
+
+
+
+// Formats and writes the given time to the LED display.
+void DisplayTime(const RtcDateTime *timePtr) {
+  bool pm;
+  uint8_t hour = GetAdjustedHour(timePtr, &pm);
+  uint8_t minute = timePtr->Minute();
+
+  // Hide the hour 10's place if the hour is less than 10
   if (hour >= 10) {
     display.setDigit(0, 0, 1, false);
   } else {
@@ -263,27 +320,20 @@ void DisplayTime(const RtcDateTime *time) {
 
 
 // Formats and prints the given time to the UART.
-void PrintTime(const RtcDateTime *time) {
-  uint8_t hour = time->Hour();
-  // handle 12-hour time silliness
-  boolean pm = false;
-  if (hour == 0) {
-    hour = 12;
-  } else if (hour > 12) {
-    hour -= 12;
-    pm = true;
-  }
-  uint8_t minute = time->Minute();
-  uint8_t second = time->Second();
+void PrintTime(const RtcDateTime *timePtr) {
+  bool pm;
+  uint8_t hour = GetAdjustedHour(timePtr, &pm);
+  uint8_t minute = timePtr->Minute();
+  uint8_t second = timePtr->Second();
 
   // format a descriptive time/date output with DOW and 12-hour format
-  Serial.print(DayOfWeekString(time->DayOfWeek()));
+  Serial.print(DayOfWeekString(timePtr->DayOfWeek()));
   Serial.print(" ");
-  Serial.print(time->Year(), DEC);
+  Serial.print(timePtr->Year(), DEC);
   Serial.print("-");
-  Serial.print(time->Month(), DEC);
+  Serial.print(timePtr->Month(), DEC);
   Serial.print("-");
-  Serial.print(time->Day(), DEC);
+  Serial.print(timePtr->Day(), DEC);
   Serial.print(" ");
   Serial.print(hour, DEC);
   Serial.print(":");
@@ -301,6 +351,11 @@ void PrintTime(const RtcDateTime *time) {
   } else {
     Serial.print(" am");
   }
+
+  if (IsDST(timePtr)) {
+    Serial.print(" dst");
+  }
+
   Serial.print("  light:");
   //Serial.print(analogRead(PIN_LIGHT_SENSOR), DEC);
   //Serial.print(",");
@@ -395,8 +450,17 @@ void setup() {
   Wire.begin();
   Rtc.Begin();
 
+
+  // Read configuration from NVM. If it fails, we initialize it to some
+  // reasonable default values.
+  if (!LoadConfigurationFromEeprom(&config)) {
+    config = Configuration::Default();
+  }
+
   // Setup and check the time on the RTC clock
   RtcDateTime time_compiled = RtcDateTime(__DATE__, __TIME__);
+  //RtcDateTime time_compiled = RtcDateTime("Mar 05 2021", "12:23:16");
+
   if (!Rtc.IsDateTimeValid()) {
     if (Rtc.LastError() != 0) {
       // we have a communications error
@@ -415,6 +479,8 @@ void setup() {
       // having an issue
 
       Rtc.SetDateTime(time_compiled);
+      config.DST_when_time_set = IsDST(&time_compiled);
+      WriteConfigurationToEeprom(config);
     }
   }
 
@@ -438,14 +504,26 @@ void setup() {
   if (uint32_t(time_now) < uint32_t(time_compiled)) {
     Serial.println("RTC is older than compile time!  (Updating DateTime)");
     Rtc.SetDateTime(time_compiled);
+    config.DST_when_time_set = IsDST(&time_compiled);
+    WriteConfigurationToEeprom(config);
   } else if (uint32_t(time_now) > uint32_t(time_compiled)) {
     Serial.println("RTC is newer than compile time. (this is expected)");
   } else if (uint32_t(time_now) == uint32_t(time_compiled)) {
     Serial.println(
         "RTC is the same as compile time! (not expected but all is fine)");
   }
+
+  if (config.DST_when_time_set = IsDST(&time_compiled)) {
+    Serial.println("DST history ok");
+  } else {
+    Serial.println("DST history mis-match.  Updating DateTime");
+    Rtc.SetDateTime(time_compiled);
+    config.DST_when_time_set = IsDST(&time_compiled);
+    WriteConfigurationToEeprom(config);
+  }
+
   // uncomment this line to force the RTC to take the compiled time
-  //Rtc.SetDateTime(time_compiled);
+  // Rtc.SetDateTime(time_compiled);
 
   // disable the square wave output
   Rtc.SetSquareWavePin(DS1307SquareWaveOut_Low);
@@ -453,12 +531,6 @@ void setup() {
   // setup servos
   servo_hour.attach(PIN_SERVO_HOUR);
   servo_minute.attach(PIN_SERVO_MINUTE);
-
-  // Read configuration from NVM. If it fails, we initialize it to some
-  // reasonable default values.
-  if (!LoadConfigurationFromEeprom(&config)) {
-    config = Configuration::Default();
-  }
 
   // wake up the MAX72XX from power-saving mode
   display.shutdown(0, false);
@@ -469,18 +541,19 @@ void setup() {
   select_button.Init(PIN_BUTTON_SELECT);
 }
 
-#define SERVO_SPEED_MAX  1
-int hour_pos_current = 0;
-int minute_pos_current = 0;
+#define SERVO_SPEED  0.5
+float hour_pos_current = 0;
+float minute_pos_current = 0;
 
-int ServoVelocityLimit(int current_pos, int goal_pos) {
-  int diff = abs(goal_pos - current_pos);
-  if (diff <= SERVO_SPEED_MAX) {
-    current_pos = goal_pos;
-  } else if (goal_pos > current_pos) {
-    current_pos += SERVO_SPEED_MAX;
-  } else if (goal_pos < current_pos) {
-    current_pos -= SERVO_SPEED_MAX;
+float ServoVelocityLimit(float current_pos, int goal_pos) {
+  float goal_pos_f = (float)goal_pos;
+  float diff = fabs(goal_pos_f - current_pos);
+  if (diff <= SERVO_SPEED) {
+    current_pos = goal_pos_f;
+  } else if (goal_pos_f > current_pos) {
+    current_pos += SERVO_SPEED;
+  } else if (goal_pos_f < current_pos) {
+    current_pos -= SERVO_SPEED;
   }
   return current_pos;
 }
@@ -520,9 +593,6 @@ void UpdateServos(const Configuration &config, const RtcDateTime &time) {
 uint8_t second_old = 0;
 uint16_t colon_blink_counter = 0;
 bool skipPrint = false;
-
-#define SERVO_UPDATE_PERIODS 2
-uint8_t update_servo_counter = SERVO_UPDATE_PERIODS;
 
 // Arduino provides a main() function that will repeatedly call loop() in a loop
 // as fast as possible. We can fill loop() with code that we want to run
@@ -572,11 +642,8 @@ void loop() {
 
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.
-  update_servo_counter--;
-  if(update_servo_counter == 0) {
-    update_servo_counter = SERVO_UPDATE_PERIODS;
-    UpdateServos(config, now);
-  };
+  UpdateServos(config, now);
+
   if (now.Second() != second_old) {
     DisplayTime(&now);
     if (!skipPrint) {

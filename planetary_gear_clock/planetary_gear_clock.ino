@@ -39,6 +39,8 @@
 #define STEPPER_OFFSET_DEFAULT    150
 #define STEPPER_STEPS             2052
 
+#define PIN_HALL_SENSOR           #error undefined
+
 // Button pin setup. We create button UI state variables below
 #define PIN_BUTTON_UP 4
 #define PIN_BUTTON_DOWN 2
@@ -372,64 +374,71 @@ void PrintTime(const RtcDateTime *timePtr) {
 
 
 
-// Two servo objects to control the servo positions.
+// setup the stepper motor that drives the clock
 Stepper stepper(STEPPER_STEPS, PIN_STEPPER_A1, PIN_STEPPER_A2, PIN_STEPPER_B1, PIN_STEPPER_B2);
 
-// Writes the given stage ID and 8 bit value to the LED display, used for
-// showing which step of the calibration process we are on.
-void DisplayCalibrationStage(char stage, uint8_t value) {
-  display.setChar(0, 0, stage, false);
-  for (int i = 0; i < 3; ++i) {
-    display.setDigit(0, 3 - i, value % 10, false);
-    value /= 10;
-  }
+bool HallSensorRead(void) {
+  return !digitalRead(PIN_HALL_SENSOR);
 }
 
-void DoServoCalibration(char stage, Servo *servo, uint8_t *val) {
-  while (true) {
-    // Update the buttons, detecting any new user input.
-    up_button.Update();
-    down_button.Update();
-    select_button.Update();
+// // Writes the given stage ID and 8 bit value to the LED display, used for
+// // showing which step of the calibration process we are on.
+// void DisplayCalibrationStage(char stage, uint8_t value) {
+//   display.setChar(0, 0, stage, false);
+//   for (int i = 0; i < 3; ++i) {
+//     display.setDigit(0, 3 - i, value % 10, false);
+//     value /= 10;
+//   }
+// }
 
-    if (up_button.just_pressed() || up_button.held()) {
-      (*val)++;
-    }
-    if (down_button.just_pressed() || down_button.held()) {
-      (*val)--;
-    }
-    if (select_button.just_pressed()) {
-      break;
-    }
-    *val = constrain(*val, SERVO_MIN, SERVO_MAX);
-    DisplayCalibrationStage(stage, *val);
-    servo->write(*val);
+// void DoServoCalibration(char stage, Servo *servo, uint8_t *val) {
+//   while (true) {
+//     // Update the buttons, detecting any new user input.
+//     up_button.Update();
+//     down_button.Update();
+//     select_button.Update();
 
-    delay(LOOP_PERIOD);
-  }
-}
+//     if (up_button.just_pressed() || up_button.held()) {
+//       (*val)++;
+//     }
+//     if (down_button.just_pressed() || down_button.held()) {
+//       (*val)--;
+//     }
+//     if (select_button.just_pressed()) {
+//       break;
+//     }
+//     *val = constrain(*val, SERVO_MIN, SERVO_MAX);
+//     DisplayCalibrationStage(stage, *val);
+//     servo->write(*val);
 
-// Run a calibration routine to find the servo limits, commiting our changes to
-// EEPROM when we're done.
-void DoCalibration() {
-  Serial.println("Calibrating hour 0 pos: Position a");
-  DoServoCalibration('a', &servo_hour, &config.hour_servo.min);
-  Serial.println("Calibrating hour max: Position b");
-  DoServoCalibration('b', &servo_hour, &config.hour_servo.max);
-  Serial.println("Calibrating minute min: Position c");
-  DoServoCalibration('c', &servo_minute, &config.minute_servo.min);
-  Serial.println("Calibrating minute max: Position d");
-  DoServoCalibration('d', &servo_minute, &config.minute_servo.max);
-  Serial.println("Calibration done");
-  WriteConfigurationToEeprom(config);
-}
+//     delay(LOOP_PERIOD);
+//   }
+// }
+
+// // Run a calibration routine to find the servo limits, commiting our changes to
+// // EEPROM when we're done.
+// void DoCalibration() {
+//   Serial.println("Calibrating hour 0 pos: Position a");
+//   DoServoCalibration('a', &servo_hour, &config.hour_servo.min);
+//   Serial.println("Calibrating hour max: Position b");
+//   DoServoCalibration('b', &servo_hour, &config.hour_servo.max);
+//   Serial.println("Calibrating minute min: Position c");
+//   DoServoCalibration('c', &servo_minute, &config.minute_servo.min);
+//   Serial.println("Calibrating minute max: Position d");
+//   DoServoCalibration('d', &servo_minute, &config.minute_servo.max);
+//   Serial.println("Calibration done");
+//   WriteConfigurationToEeprom(config);
+// }
 
 
 // The Arduino setup routine runs once when you press reset:
 void setup() {
   // initialize the LED pin as a digital output.
   pinMode(PIN_BLINKY_LED, OUTPUT);
-
+  
+  // initialize the hall sensor pin as a digital input.
+  pinMode(PIN_HALL_SENSOR, INPUT);
+  
   // setup setial port
   Serial.begin(115200);
 
@@ -514,9 +523,6 @@ void setup() {
   // disable the square wave output
   Rtc.SetSquareWavePin(DS1307SquareWaveOut_Low);
 
-  // setup the stepper, and set the speed of the motor to 10 RPMs
-  stepper.setSpeed(10);
-
   // wake up the MAX72XX from power-saving mode
   display.shutdown(0, false);
   display.setIntensity(0, config.display_brightness);
@@ -524,22 +530,19 @@ void setup() {
   up_button.Init(PIN_BUTTON_UP);
   down_button.Init(PIN_BUTTON_DOWN);
   select_button.Init(PIN_BUTTON_SELECT);
+
+  // setup the stepper, and set the speed of the motor to 10 RPMs
+  stepper.setSpeed(10);
+
+  // drive the clock clockwise until the hall sensor trips
+  while (!HallSensorRead()) {
+    stepper.step(1);
+  };
+  // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
+  stepper.step(config.stepper_offset);
 }
 
 uint32_t stepper_pos_current = 0;
-
-float ServoVelocityLimit(float current_pos, int goal_pos) {
-  float goal_pos_f = (float)goal_pos;
-  float diff = fabs(goal_pos_f - current_pos);
-  if (diff <= SERVO_SPEED) {
-    current_pos = goal_pos_f;
-  } else if (goal_pos_f > current_pos) {
-    current_pos += SERVO_SPEED;
-  } else if (goal_pos_f < current_pos) {
-    current_pos -= SERVO_SPEED;
-  }
-  return current_pos;
-}
 
 
 // Displays the given time on the minute and second hands, using pre-determined
@@ -547,26 +550,19 @@ float ServoVelocityLimit(float current_pos, int goal_pos) {
 void UpdateStepper(const Configuration &config, const RtcDateTime &time) {
   // We display 12 hour time.
   bool pm;
-  uint8_t hour = GetAdjustedHour(timePtr, &pm);
-  const int minute = time.Minute();
+  uint32_t hour = (uint32_t)GetAdjustedHour(timePtr, &pm);
+  uint32_t minute = (uint32_t)time.Minute();
+  uint32_t second = (uint32_t)time.Second();
+  
 
-
-  // Scale the 720 different possible minutes in a 12 hour span to the servo
-  // values.
-  uint32_t stepper_pos_goal = hour * STEPPER_STEPS + (uint32_t)minute * STEPPER_STEPS / 60;
-  hour_pos_goal =
-      map(hour_pos_goal, 0, 720, config.hour_servo.min, config.hour_servo.max);
-  hour_pos_goal = constrain(hour_pos_goal, SERVO_MIN, SERVO_MAX);
-  hour_pos_current = ServoVelocityLimit(hour_pos_current, hour_pos_goal);
-  servo_hour.write(hour_pos_current);
-
-  // Scale the 60 different possible minutes in a 1 hour span to the servo
-  // values.
-  int minute_pos_goal =
-      map(minute, 0, 60, config.minute_servo.min, config.minute_servo.max);
-  minute_pos_goal = constrain(minute_pos_goal, SERVO_MIN, SERVO_MAX);
-  minute_pos_current = ServoVelocityLimit(minute_pos_current, minute_pos_goal);
-  servo_minute.write(minute_pos_current);
+  // Scale the 720 different possible minutes in a 12 hour span to a stepper position
+  uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
+  //uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60 + second * STEPPER_STEPS / (60*60);
+  
+  // let's just rotate cockwise until We get to the correct time.  We can try to compute reverse rotations in code V2
+  if (stepper_pos_goal != stepper_pos_current) {
+    stepper.step(1);
+  }
 }
 
 // State used in the loop, which must be global because of the way arduino
@@ -589,7 +585,7 @@ void loop() {
 
   // Holding down the select button triggers the servo calibration routine.
   if (select_button.held()) {
-    DoCalibration();
+    //DoCalibration();
   }
 
   // Check for display brightness updates, and commit changes to EEPROM.
@@ -617,15 +613,15 @@ void loop() {
     skipPrint = true;
   }
   if (led_brightness_old != config.display_brightness) {
-    //display.setIntensity(0, config.display_brightness);
     WriteConfigurationToEeprom(config);
   }
   display.setIntensity(0, constrain(config.display_brightness + brightness_adjust(), LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX));
 
+  //move the stepper motor towards the correct time
+  UpdateStepper(config, now);
+  
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.
-  UpdateStepper(config, now);
-
   if (now.Second() != second_old) {
     DisplayTime(&now);
     if (!skipPrint) {

@@ -59,7 +59,7 @@
 // An aggregate of all configuration we need to store. We store servo
 // configuration for each servo, and a display brightness.
 struct Configuration {
-  uint32_t stepper_offset;
+  int32_t stepper_offset;
   uint8_t display_brightness;
   bool DST_when_time_set;
 
@@ -544,31 +544,53 @@ void setup() {
   while (HallSensorRead()) {
     stepper.step(-1);
   }
-  Serial.println("stepping to 0");
+  //Serial.println("stepping to 0");
   //stepper.step(-20);
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
-  //stepper.step(config.stepper_offset);
-  stepper.step(230);
+  Serial.print("stepping to zero offset:");
+  //config.stepper_offset = 150;
+  Serial.println(config.stepper_offset);
+  stepper.step(config.stepper_offset);
+  //WriteConfigurationToEeprom(config);
+  Serial.print("stepping to current time");
+  //stepper.step(230);
 }
 
-uint32_t stepper_pos_current = 0;
 
+int16_t stepperPosDiff(int16_t pos_current, int16_t pos_goal) {
+  int16_t diff;
+  if (pos_goal > pos_current) {
+    diff = pos_goal - pos_current;
+    if (diff > (STEPPER_STEPS_12HOUR / 2)) {
+      diff = -(STEPPER_STEPS_12HOUR - diff);
+    }
+  } else {
+    diff = pos_current - pos_goal;
+    if (diff > (STEPPER_STEPS_12HOUR / 2)) {
+      diff = STEPPER_STEPS_12HOUR - diff;
+    } else {
+      diff = -diff;
+    }
+  }
+  return diff;
+}
 
+int32_t stepper_pos_current = 0;
 // Displays the given time on the minute and second hands, using pre-determined
 // minimum and maximum servo values derived from our calibration process.
 void UpdateStepper(const RtcDateTime& time, bool printNow) {
   // We display 12 hour time.
   bool pm;
-  uint32_t hour = (uint32_t)GetAdjustedHour(time, &pm);
-  uint32_t minute = (uint32_t)time.Minute();
-  uint32_t second = (uint32_t)time.Second();
+  int32_t hour = (int32_t)GetAdjustedHour(time, &pm);
+  int32_t minute = (int32_t)time.Minute();
+  int32_t second = (int32_t)time.Second();
   if(hour == 12) {
     hour = 0;
   }
   
   // Scale the 720 minutes in a 12 hour span to a stepper position
-  uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
-  //uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60 + second * STEPPER_STEPS / (60*60);
+  int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
+  //int16_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60 + second * STEPPER_STEPS / (60*60);
 
   if (printNow) {
     Serial.print("hour:");
@@ -581,12 +603,27 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
     Serial.println(stepper_pos_current);
   }
   
-  // let's just rotate cockwise until We get to the correct time.  We can try to compute reverse rotations in code V2
-  if (stepper_pos_goal != stepper_pos_current) {
+  // // let's just rotate cockwise until We get to the correct time.  We can try to compute reverse rotations in code V2
+  // if (stepper_pos_goal != stepper_pos_current) {
+  //   stepper.step(1);
+  //   stepper_pos_current++;
+  //   if(stepper_pos_current >= STEPPER_STEPS_12HOUR) {
+  //     stepper_pos_current = 0;
+  //   }
+  // }
+
+  int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);
+  if (diff > 0) {
     stepper.step(1);
     stepper_pos_current++;
     if(stepper_pos_current >= STEPPER_STEPS_12HOUR) {
       stepper_pos_current = 0;
+    }
+  } else if (diff < 0) {
+    stepper.step(-1);
+    stepper_pos_current--;
+    if(stepper_pos_current < 0) {
+      stepper_pos_current = (STEPPER_STEPS_12HOUR - 1);
     }
   }
 }

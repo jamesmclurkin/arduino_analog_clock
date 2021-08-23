@@ -37,6 +37,8 @@
 #define PIN_STEPPER_B2            7
 
 #define STEPPER_OFFSET_DEFAULT    150
+#define STEPPER_OFFSET_MIN        0
+#define STEPPER_OFFSET_MAX        400
 #define STEPPER_STEPS             2052
 #define STEPPER_STEPS_12HOUR      (2052 * 12)
 
@@ -382,54 +384,45 @@ bool HallSensorRead(void) {
   return !digitalRead(PIN_HALL_SENSOR);
 }
 
-// // Writes the given stage ID and 8 bit value to the LED display, used for
-// // showing which step of the calibration process we are on.
-// void DisplayCalibrationStage(char stage, uint8_t value) {
-//   display.setChar(0, 0, stage, false);
-//   for (int i = 0; i < 3; ++i) {
-//     display.setDigit(0, 3 - i, value % 10, false);
-//     value /= 10;
-//   }
-// }
+// Writes the given stage ID and 8 bit value to the LED display, used for
+// showing which step of the calibration process we are on.
+void DisplayCalibrationStage(char stage, uint8_t value) {
+  display.setChar(0, 0, stage, false);
+  for (int i = 0; i < 3; ++i) {
+    display.setDigit(0, 3 - i, value % 10, false);
+    value /= 10;
+  }
+}
 
-// void DoServoCalibration(char stage, Servo *servo, uint8_t *val) {
-//   while (true) {
-//     // Update the buttons, detecting any new user input.
-//     up_button.Update();
-//     down_button.Update();
-//     select_button.Update();
+// Run a calibration routine to find the servo limits, commiting our changes to
+// EEPROM when we're done.
+void DoCalibration() {
+  Serial.println("Calibrating stepper offset");
+  while (true) {
+    // Update the buttons, detecting any new user input.
+    up_button.Update();
+    down_button.Update();
+    select_button.Update();
 
-//     if (up_button.just_pressed() || up_button.held()) {
-//       (*val)++;
-//     }
-//     if (down_button.just_pressed() || down_button.held()) {
-//       (*val)--;
-//     }
-//     if (select_button.just_pressed()) {
-//       break;
-//     }
-//     *val = constrain(*val, SERVO_MIN, SERVO_MAX);
-//     DisplayCalibrationStage(stage, *val);
-//     servo->write(*val);
-
-//     delay(LOOP_PERIOD);
-//   }
-// }
-
-// // Run a calibration routine to find the servo limits, commiting our changes to
-// // EEPROM when we're done.
-// void DoCalibration() {
-//   Serial.println("Calibrating hour 0 pos: Position a");
-//   DoServoCalibration('a', &servo_hour, &config.hour_servo.min);
-//   Serial.println("Calibrating hour max: Position b");
-//   DoServoCalibration('b', &servo_hour, &config.hour_servo.max);
-//   Serial.println("Calibrating minute min: Position c");
-//   DoServoCalibration('c', &servo_minute, &config.minute_servo.min);
-//   Serial.println("Calibrating minute max: Position d");
-//   DoServoCalibration('d', &servo_minute, &config.minute_servo.max);
-//   Serial.println("Calibration done");
-//   WriteConfigurationToEeprom(config);
-// }
+    if (up_button.just_pressed() || up_button.held()) {
+      config.stepper_offset++;
+      stepper.step(1);
+    }
+    if (down_button.just_pressed() || down_button.held()) {
+      config.stepper_offset--;
+      stepper.step(-1);
+    }
+    if (select_button.just_pressed()) {
+      break;
+    }
+    config.stepper_offset = constrain(config.stepper_offset, STEPPER_OFFSET_MIN, STEPPER_OFFSET_MAX);
+    DisplayCalibrationStage('C', config.stepper_offset);
+    //delay(LOOP_PERIOD);
+    delay(1);
+  }
+  Serial.println("Calibration done");
+  WriteConfigurationToEeprom(config);
+}
 
 
 // The Arduino setup routine runs once when you press reset:
@@ -544,15 +537,17 @@ void setup() {
   while (HallSensorRead()) {
     stepper.step(-1);
   }
-  //Serial.println("stepping to 0");
-  //stepper.step(-20);
+  stepper.step(-20);
+  
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
+  if(config.stepper_offset > STEPPER_OFFSET_MAX) {
+    config.stepper_offset = STEPPER_OFFSET_DEFAULT;
+    WriteConfigurationToEeprom(config);
+  }
   Serial.print("stepping to zero offset:");
-  //config.stepper_offset = 150;
   Serial.println(config.stepper_offset);
   stepper.step(config.stepper_offset);
-  //WriteConfigurationToEeprom(config);
-  Serial.print("stepping to current time");
+  Serial.println("stepping to current time");
   //stepper.step(230);
 }
 
@@ -588,30 +583,24 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
     hour = 0;
   }
   
-  // Scale the 720 minutes in a 12 hour span to a stepper position
+  // Scale the minutes and seconds in a 12-hour span to a stepper position
+  // minute-by-minute rotation
   int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
-  //int16_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60 + second * STEPPER_STEPS / (60*60);
+  // smooth rotation
+  //int32_t stepper_pos_goal = (hour * STEPPER_STEPS) + (minute * STEPPER_STEPS / 60) + (second * STEPPER_STEPS / (60*60));
 
-  if (printNow) {
-    Serial.print("hour:");
-    Serial.print(hour);
-    Serial.print("  minute:");
-    Serial.print(minute);
-    Serial.print("  stepper_pos_goal:");
-    Serial.print(stepper_pos_goal);
-    Serial.print("  stepper_pos_current:");
-    Serial.println(stepper_pos_current);
-  }
-  
-  // // let's just rotate cockwise until We get to the correct time.  We can try to compute reverse rotations in code V2
-  // if (stepper_pos_goal != stepper_pos_current) {
-  //   stepper.step(1);
-  //   stepper_pos_current++;
-  //   if(stepper_pos_current >= STEPPER_STEPS_12HOUR) {
-  //     stepper_pos_current = 0;
-  //   }
+  // if (printNow) {
+  //   Serial.print("hour:");
+  //   Serial.print(hour);
+  //   Serial.print("  minute:");
+  //   Serial.print(minute);
+  //   Serial.print("  stepper_pos_goal:");
+  //   Serial.print(stepper_pos_goal);
+  //   Serial.print("  stepper_pos_current:");
+  //   Serial.println(stepper_pos_current);
   // }
 
+  // rotate the motor clockwise or counter clockwise until we get to the clock position  
   int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);
   if (diff > 0) {
     stepper.step(1);
@@ -649,7 +638,7 @@ void loop() {
 
   // Holding down the select button triggers the servo calibration routine.
   if (select_button.held()) {
-    //DoCalibration();
+    DoCalibration();
   }
 
   // Check for display brightness updates, and commit changes to EEPROM.

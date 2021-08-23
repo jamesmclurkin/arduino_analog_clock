@@ -37,9 +37,12 @@
 #define PIN_STEPPER_B2            7
 
 #define STEPPER_OFFSET_DEFAULT    150
+#define STEPPER_OFFSET_MIN        0
+#define STEPPER_OFFSET_MAX        400
 #define STEPPER_STEPS             2052
+#define STEPPER_STEPS_12HOUR      (2052 * 12)
 
-#define PIN_HALL_SENSOR           #error undefined
+#define PIN_HALL_SENSOR           15
 
 // Button pin setup. We create button UI state variables below
 #define PIN_BUTTON_UP 4
@@ -58,7 +61,7 @@
 // An aggregate of all configuration we need to store. We store servo
 // configuration for each servo, and a display brightness.
 struct Configuration {
-  uint32_t stepper_offset;
+  int32_t stepper_offset;
   uint8_t display_brightness;
   bool DST_when_time_set;
 
@@ -67,7 +70,7 @@ struct Configuration {
   // lost due to memory corruption.
   static Configuration Default() {
     Configuration c;
-    C.stepper_offset = STEPPER_OFFSET_DEFAULT;
+    c.stepper_offset = STEPPER_OFFSET_DEFAULT;
     c.display_brightness = LED_BRIGHTNESS_DEFAULT;
     c.DST_when_time_set = false;
     return c;
@@ -232,10 +235,10 @@ const char *DayOfWeekString(int DoW) {
 }
 
 
-bool IsDST(const RtcDateTime *time) {
-  int day = time->Day();
-  int month = time->Month();
-  int dow = time->DayOfWeek();
+bool IsDST(const RtcDateTime& time) {
+  int day = time.Day();
+  int month = time.Month();
+  int dow = time.DayOfWeek();
 
   //January, february, and december are out.
   if (month < 3 || month > 11) { return false; }
@@ -250,11 +253,11 @@ bool IsDST(const RtcDateTime *time) {
 }
 
 
-uint8_t GetAdjustedHour(const RtcDateTime *timePtr, bool *pmPtr) {
-  int8_t hour = (int8_t)timePtr->Hour();
+uint8_t GetAdjustedHour(const RtcDateTime& time, bool *pmPtr) {
+  int8_t hour = (int8_t)time.Hour();
 
   // handle DST silliness
-  bool DSTNow = IsDST(timePtr);
+  bool DSTNow = IsDST(time);
   //Serial.print("(DST");
   if (DSTNow != config.DST_when_time_set) {
     //Serial.print("a");
@@ -292,10 +295,10 @@ uint8_t GetAdjustedHour(const RtcDateTime *timePtr, bool *pmPtr) {
 
 
 // Formats and writes the given time to the LED display.
-void DisplayTime(const RtcDateTime *timePtr) {
+void DisplayTime(const RtcDateTime& time) {
   bool pm;
-  uint8_t hour = GetAdjustedHour(timePtr, &pm);
-  uint8_t minute = timePtr->Minute();
+  uint8_t hour = GetAdjustedHour(time, &pm);
+  uint8_t minute = time.Minute();
 
   // Hide the hour 10's place if the hour is less than 10
   if (hour >= 10) {
@@ -310,20 +313,20 @@ void DisplayTime(const RtcDateTime *timePtr) {
 
 
 // Formats and prints the given time to the UART.
-void PrintTime(const RtcDateTime *timePtr) {
+void PrintTime(const RtcDateTime& time) {
   bool pm;
-  uint8_t hour = GetAdjustedHour(timePtr, &pm);
-  uint8_t minute = timePtr->Minute();
-  uint8_t second = timePtr->Second();
+  uint8_t hour = GetAdjustedHour(time, &pm);
+  uint8_t minute = time.Minute();
+  uint8_t second = time.Second();
 
   // format a descriptive time/date output with DOW and 12-hour format
-  Serial.print(DayOfWeekString(timePtr->DayOfWeek()));
+  Serial.print(DayOfWeekString(time.DayOfWeek()));
   Serial.print(" ");
-  Serial.print(timePtr->Year(), DEC);
+  Serial.print(time.Year(), DEC);
   Serial.print("-");
-  Serial.print(timePtr->Month(), DEC);
+  Serial.print(time.Month(), DEC);
   Serial.print("-");
-  Serial.print(timePtr->Day(), DEC);
+  Serial.print(time.Day(), DEC);
   Serial.print(" ");
   Serial.print(hour, DEC);
   Serial.print(":");
@@ -342,7 +345,7 @@ void PrintTime(const RtcDateTime *timePtr) {
     Serial.print(" am");
   }
 
-  if (IsDST(timePtr)) {
+  if (IsDST(time)) {
     Serial.print(" dst");
   }
 
@@ -381,54 +384,45 @@ bool HallSensorRead(void) {
   return !digitalRead(PIN_HALL_SENSOR);
 }
 
-// // Writes the given stage ID and 8 bit value to the LED display, used for
-// // showing which step of the calibration process we are on.
-// void DisplayCalibrationStage(char stage, uint8_t value) {
-//   display.setChar(0, 0, stage, false);
-//   for (int i = 0; i < 3; ++i) {
-//     display.setDigit(0, 3 - i, value % 10, false);
-//     value /= 10;
-//   }
-// }
+// Writes the given stage ID and 8 bit value to the LED display, used for
+// showing which step of the calibration process we are on.
+void DisplayCalibrationStage(char stage, uint8_t value) {
+  display.setChar(0, 0, stage, false);
+  for (int i = 0; i < 3; ++i) {
+    display.setDigit(0, 3 - i, value % 10, false);
+    value /= 10;
+  }
+}
 
-// void DoServoCalibration(char stage, Servo *servo, uint8_t *val) {
-//   while (true) {
-//     // Update the buttons, detecting any new user input.
-//     up_button.Update();
-//     down_button.Update();
-//     select_button.Update();
+// Run a calibration routine to find the servo limits, commiting our changes to
+// EEPROM when we're done.
+void DoCalibration() {
+  Serial.println("Calibrating stepper offset");
+  while (true) {
+    // Update the buttons, detecting any new user input.
+    up_button.Update();
+    down_button.Update();
+    select_button.Update();
 
-//     if (up_button.just_pressed() || up_button.held()) {
-//       (*val)++;
-//     }
-//     if (down_button.just_pressed() || down_button.held()) {
-//       (*val)--;
-//     }
-//     if (select_button.just_pressed()) {
-//       break;
-//     }
-//     *val = constrain(*val, SERVO_MIN, SERVO_MAX);
-//     DisplayCalibrationStage(stage, *val);
-//     servo->write(*val);
-
-//     delay(LOOP_PERIOD);
-//   }
-// }
-
-// // Run a calibration routine to find the servo limits, commiting our changes to
-// // EEPROM when we're done.
-// void DoCalibration() {
-//   Serial.println("Calibrating hour 0 pos: Position a");
-//   DoServoCalibration('a', &servo_hour, &config.hour_servo.min);
-//   Serial.println("Calibrating hour max: Position b");
-//   DoServoCalibration('b', &servo_hour, &config.hour_servo.max);
-//   Serial.println("Calibrating minute min: Position c");
-//   DoServoCalibration('c', &servo_minute, &config.minute_servo.min);
-//   Serial.println("Calibrating minute max: Position d");
-//   DoServoCalibration('d', &servo_minute, &config.minute_servo.max);
-//   Serial.println("Calibration done");
-//   WriteConfigurationToEeprom(config);
-// }
+    if (up_button.just_pressed() || up_button.held()) {
+      config.stepper_offset++;
+      stepper.step(1);
+    }
+    if (down_button.just_pressed() || down_button.held()) {
+      config.stepper_offset--;
+      stepper.step(-1);
+    }
+    if (select_button.just_pressed()) {
+      break;
+    }
+    config.stepper_offset = constrain(config.stepper_offset, STEPPER_OFFSET_MIN, STEPPER_OFFSET_MAX);
+    DisplayCalibrationStage('C', config.stepper_offset);
+    //delay(LOOP_PERIOD);
+    delay(1);
+  }
+  Serial.println("Calibration done");
+  WriteConfigurationToEeprom(config);
+}
 
 
 // The Arduino setup routine runs once when you press reset:
@@ -474,7 +468,7 @@ void setup() {
       // having an issue
 
       Rtc.SetDateTime(time_compiled);
-      config.DST_when_time_set = IsDST(&time_compiled);
+      config.DST_when_time_set = IsDST(time_compiled);
       WriteConfigurationToEeprom(config);
     }
   }
@@ -487,19 +481,19 @@ void setup() {
   Serial.print("Compile time=");
   Serial.print(uint32_t(time_compiled), DEC);
   Serial.print(" :");
-  PrintTime(&time_compiled);
+  PrintTime(time_compiled);
 
   RtcDateTime time_now = Rtc.GetDateTime();
   Serial.print("    RTC time=");
   Serial.print(uint32_t(time_now), DEC);
   Serial.print(" :");
-  PrintTime(&time_now);
+  PrintTime(time_now);
 
   // figure out if we should keep the RTC time or take the compiled time
   if (uint32_t(time_now) < uint32_t(time_compiled)) {
     Serial.println("RTC is older than compile time!  (Updating DateTime)");
     Rtc.SetDateTime(time_compiled);
-    config.DST_when_time_set = IsDST(&time_compiled);
+    config.DST_when_time_set = IsDST(time_compiled);
     WriteConfigurationToEeprom(config);
   } else if (uint32_t(time_now) > uint32_t(time_compiled)) {
     Serial.println("RTC is newer than compile time. (this is expected)");
@@ -508,12 +502,12 @@ void setup() {
         "RTC is the same as compile time! (not expected but all is fine)");
   }
 
-  if (config.DST_when_time_set = IsDST(&time_compiled)) {
+  if (config.DST_when_time_set = IsDST(time_compiled)) {
     Serial.println("DST history ok");
   } else {
     Serial.println("DST history mis-match.  Updating DateTime");
     Rtc.SetDateTime(time_compiled);
-    config.DST_when_time_set = IsDST(&time_compiled);
+    config.DST_when_time_set = IsDST(time_compiled);
     WriteConfigurationToEeprom(config);
   }
 
@@ -534,34 +528,92 @@ void setup() {
   // setup the stepper, and set the speed of the motor to 10 RPMs
   stepper.setSpeed(10);
 
-  // drive the clock clockwise until the hall sensor trips
+  // drive the clock counter clockwise until the hall sensor trips
+  Serial.println("looking for hall...");
   while (!HallSensorRead()) {
-    stepper.step(1);
-  };
+    stepper.step(-1);
+  }
+  Serial.println("got hall.  looking for end of hall...");
+  while (HallSensorRead()) {
+    stepper.step(-1);
+  }
+  stepper.step(-20);
+  
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
+  if(config.stepper_offset > STEPPER_OFFSET_MAX) {
+    config.stepper_offset = STEPPER_OFFSET_DEFAULT;
+    WriteConfigurationToEeprom(config);
+  }
+  Serial.print("stepping to zero offset:");
+  Serial.println(config.stepper_offset);
   stepper.step(config.stepper_offset);
+  Serial.println("stepping to current time");
+  //stepper.step(230);
 }
 
-uint32_t stepper_pos_current = 0;
 
+int16_t stepperPosDiff(int16_t pos_current, int16_t pos_goal) {
+  int16_t diff;
+  if (pos_goal > pos_current) {
+    diff = pos_goal - pos_current;
+    if (diff > (STEPPER_STEPS_12HOUR / 2)) {
+      diff = -(STEPPER_STEPS_12HOUR - diff);
+    }
+  } else {
+    diff = pos_current - pos_goal;
+    if (diff > (STEPPER_STEPS_12HOUR / 2)) {
+      diff = STEPPER_STEPS_12HOUR - diff;
+    } else {
+      diff = -diff;
+    }
+  }
+  return diff;
+}
 
+int32_t stepper_pos_current = 0;
 // Displays the given time on the minute and second hands, using pre-determined
 // minimum and maximum servo values derived from our calibration process.
-void UpdateStepper(const Configuration &config, const RtcDateTime &time) {
+void UpdateStepper(const RtcDateTime& time, bool printNow) {
   // We display 12 hour time.
   bool pm;
-  uint32_t hour = (uint32_t)GetAdjustedHour(timePtr, &pm);
-  uint32_t minute = (uint32_t)time.Minute();
-  uint32_t second = (uint32_t)time.Second();
+  int32_t hour = (int32_t)GetAdjustedHour(time, &pm);
+  int32_t minute = (int32_t)time.Minute();
+  int32_t second = (int32_t)time.Second();
+  if(hour == 12) {
+    hour = 0;
+  }
   
+  // Scale the minutes and seconds in a 12-hour span to a stepper position
+  // minute-by-minute rotation
+  int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
+  // smooth rotation
+  //int32_t stepper_pos_goal = (hour * STEPPER_STEPS) + (minute * STEPPER_STEPS / 60) + (second * STEPPER_STEPS / (60*60));
 
-  // Scale the 720 different possible minutes in a 12 hour span to a stepper position
-  uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
-  //uint32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60 + second * STEPPER_STEPS / (60*60);
-  
-  // let's just rotate cockwise until We get to the correct time.  We can try to compute reverse rotations in code V2
-  if (stepper_pos_goal != stepper_pos_current) {
+  // if (printNow) {
+  //   Serial.print("hour:");
+  //   Serial.print(hour);
+  //   Serial.print("  minute:");
+  //   Serial.print(minute);
+  //   Serial.print("  stepper_pos_goal:");
+  //   Serial.print(stepper_pos_goal);
+  //   Serial.print("  stepper_pos_current:");
+  //   Serial.println(stepper_pos_current);
+  // }
+
+  // rotate the motor clockwise or counter clockwise until we get to the clock position  
+  int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);
+  if (diff > 0) {
     stepper.step(1);
+    stepper_pos_current++;
+    if(stepper_pos_current >= STEPPER_STEPS_12HOUR) {
+      stepper_pos_current = 0;
+    }
+  } else if (diff < 0) {
+    stepper.step(-1);
+    stepper_pos_current--;
+    if(stepper_pos_current < 0) {
+      stepper_pos_current = (STEPPER_STEPS_12HOUR - 1);
+    }
   }
 }
 
@@ -582,10 +634,11 @@ void loop() {
   down_button.Update();
   select_button.Update();
   light_sensor_update();
+  bool printNow = false;
 
   // Holding down the select button triggers the servo calibration routine.
   if (select_button.held()) {
-    //DoCalibration();
+    DoCalibration();
   }
 
   // Check for display brightness updates, and commit changes to EEPROM.
@@ -593,7 +646,7 @@ void loop() {
   RtcDateTime now = Rtc.GetDateTime();
   if (up_button.just_pressed()) {
     //Serial.println("up");
-    PrintTime(&now);
+    PrintTime(now);
     skipPrint = true;
     if (config.display_brightness < LED_BRIGHTNESS_MAX) {
       config.display_brightness++;
@@ -601,7 +654,7 @@ void loop() {
   }
   if (down_button.just_pressed()) {
     //Serial.println("down");
-    PrintTime(&now);
+    PrintTime(now);
     skipPrint = true;
     if (config.display_brightness > LED_BRIGHTNESS_MIN) {
       config.display_brightness--;
@@ -609,7 +662,7 @@ void loop() {
   }
   if (select_button.just_pressed()) {
     //Serial.println("select");
-    PrintTime(&now);
+    PrintTime(now);
     skipPrint = true;
   }
   if (led_brightness_old != config.display_brightness) {
@@ -617,21 +670,22 @@ void loop() {
   }
   display.setIntensity(0, constrain(config.display_brightness + brightness_adjust(), LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX));
 
-  //move the stepper motor towards the correct time
-  UpdateStepper(config, now);
-  
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.
   if (now.Second() != second_old) {
-    DisplayTime(&now);
+    printNow = true;
+    DisplayTime(now);
     if (!skipPrint) {
-      PrintTime(&now);
+      PrintTime(now);
     }
     skipPrint = false;
     colon_blink_counter = COLON_BLINK_TIME;
   }
   second_old = now.Second();
 
+  //move the stepper motor towards the correct time
+  UpdateStepper(now, printNow);
+  
   // Count down some number of loop ticks before turning the colon back off.
   // It's turned back on every second by the code above.
   if (colon_blink_counter > 0) {

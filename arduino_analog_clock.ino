@@ -39,6 +39,8 @@
 #define SERVO_MIN_DEFAULT 20
 #define SERVO_MAX_DEFAULT 170
 
+#define SERVO_SPEED  0.3
+
 // Button pin setup. We create button UI state variables below
 #define PIN_BUTTON_UP 4
 #define PIN_BUTTON_DOWN 2
@@ -541,7 +543,6 @@ void setup() {
   select_button.Init(PIN_BUTTON_SELECT);
 }
 
-#define SERVO_SPEED  0.5
 float hour_pos_current = 0;
 float minute_pos_current = 0;
 

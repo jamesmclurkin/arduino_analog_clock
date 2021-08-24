@@ -571,6 +571,9 @@ int16_t stepperPosDiff(int16_t pos_current, int16_t pos_goal) {
 }
 
 int32_t stepper_pos_current = 0;
+bool recalibrate_with_hall = false;
+bool hall_sensor_old = false;
+
 // Displays the given time on the minute and second hands, using pre-determined
 // minimum and maximum servo values derived from our calibration process.
 void UpdateStepper(const RtcDateTime& time, bool printNow) {
@@ -582,7 +585,22 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   if(hour == 12) {
     hour = 0;
   }
-  
+  if((hour == 6) && (minute == 0) && pm) {
+    // set the stepper to recalibrate the next time the hall is tripped, right before 12am midnight
+    recalibrate_with_hall = true;
+  }
+
+  bool hall_sensor = HallSensorRead();
+  if(hall_sensor && !hall_sensor_old) {
+    // positive edge on the hall sensor.  It's almost 12:00
+    // is it time to recalibrate?
+    if(recalibrate_with_hall) {
+      stepper_pos_current = STEPPER_STEPS_12HOUR - config.stepper_offset;
+      recalibrate_with_hall = false;
+      Serial.println("recalibrated stepper position with hall sensor");
+    }
+  }
+  hall_sensor_old = hall_sensor;
   // Scale the minutes and seconds in a 12-hour span to a stepper position
   // minute-by-minute rotation
   int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;

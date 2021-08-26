@@ -56,8 +56,8 @@
 #ifdef STEPPER_POLOLU
 #define PIN_STEPPER_STBY          17
 #define PIN_STEPPER_EN            16
-#define PIN_STEPPER_STEP          7
-#define PIN_STEPPER_DIR           6
+#define PIN_STEPPER_STEP          6
+#define PIN_STEPPER_DIR           7
 #endif
 
 #define STEPPER_OFFSET_DEFAULT    150
@@ -428,22 +428,24 @@ void StepperSetup(void) {
   pinMode(PIN_STEPPER_DIR, OUTPUT);
   digitalWrite(PIN_STEPPER_DIR, LOW);
 
+  // enable the motor
+  delay(50);
   digitalWrite(PIN_STEPPER_STBY, HIGH);
+  delay(50);
 }
 
 void StepperStep(int steps) {
   if (steps >= 0) {
     digitalWrite(PIN_STEPPER_DIR, LOW);
-  }
-  else {
+  } else {
     digitalWrite(PIN_STEPPER_DIR, HIGH);
   }
-  for (int i = 0; i < steps; i++)
-  {
+  steps = abs(steps);
+  for (int i = 0; i < steps; i++) {
     digitalWrite(PIN_STEPPER_STEP, HIGH);
-    delay(10);
+    delayMicroseconds(1300);
     digitalWrite(PIN_STEPPER_STEP, LOW);
-    delay(10);
+    delayMicroseconds(1300);
   }  
 }
 #endif
@@ -604,7 +606,7 @@ void setup() {
 
   // drive the clock counter clockwise until the hall sensor trips
   if (HallSensorRead()) {
-    Serial.println("on top of hall sensor already.  Let's advance one hour...");
+    Serial.println("On top of hall sensor already.  Advancing one hour...");
     StepperStep(STEPPER_STEPS_1HOUR);
   }
   Serial.println("looking for hall sensor...");
@@ -679,17 +681,17 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   // smooth rotation
   //int32_t stepper_pos_goal = (hour * STEPPER_STEPS_1HOUR) + (minute * STEPPER_STEPS_1HOUR / 60) + (second * STEPPER_STEPS_1HOUR / (60*60));
 
-  // if (printNow) {
-  //   Serial.print("hour:");
-  //   Serial.print(hour);
-  //   Serial.print("  minute:");
-  //   Serial.print(minute);
-  //   Serial.print("  stepper_pos_goal:");
-  //   Serial.print(stepper_pos_goal);
-  //   Serial.print("  stepper_pos_current:");
-  //   Serial.println(stepper_pos_current);
-  // }
-
+   if (printNow) {
+     Serial.print("hour:");
+     Serial.print(hour);
+     Serial.print("  minute:");
+     Serial.print(minute);
+     Serial.print("  stepper_pos_goal:");
+     Serial.print(stepper_pos_goal);
+     Serial.print("  stepper_pos_current:");
+     Serial.println(stepper_pos_current);
+   }
+  
   // rotate the motor clockwise or counter clockwise until we get to the clock position  
   int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);
   if (diff > 0) {

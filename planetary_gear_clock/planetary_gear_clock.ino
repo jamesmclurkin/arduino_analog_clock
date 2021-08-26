@@ -4,8 +4,9 @@
 #include <Stepper.h>
 #include <EEPROM.h>
 
-//#define STEPPER_POLOLU
-#define STEPPER_ULN2003
+//#define LIGHT_SENSOR_ENABLE
+#define STEPPER_POLOLU
+//#define STEPPER_ULN2003
 
 #ifdef STEPPER_POLOLU
   #ifdef STEPPER_ULN2003
@@ -50,7 +51,9 @@
 #define PIN_STEPPER_A2            5
 #define PIN_STEPPER_B1            6
 #define PIN_STEPPER_B2            7
-#else
+#endif
+
+#ifdef STEPPER_POLOLU
 #define PIN_STEPPER_STBY          17
 #define PIN_STEPPER_EN            16
 #define PIN_STEPPER_STEP          7
@@ -58,9 +61,9 @@
 #endif
 
 #define STEPPER_OFFSET_DEFAULT    150
-#define STEPPER_OFFSET_MIN        0
+#define STEPPER_OFFSET_MIN        -400
 #define STEPPER_OFFSET_MAX        400
-#define STEPPER_STEPS             2052
+#define STEPPER_STEPS_1HOUR       2052
 #define STEPPER_STEPS_12HOUR      (2052 * 12)
 
 #define PIN_HALL_SENSOR           15
@@ -399,7 +402,52 @@ void PrintTime(const RtcDateTime& time) {
 
 
 // setup the stepper motor that drives the clock
-Stepper stepper(STEPPER_STEPS, PIN_STEPPER_A1, PIN_STEPPER_A2, PIN_STEPPER_B1, PIN_STEPPER_B2);
+#ifdef STEPPER_ULN2003
+Stepper stepper(STEPPER_STEPS_1HOUR, PIN_STEPPER_A1, PIN_STEPPER_A2, PIN_STEPPER_B1, PIN_STEPPER_B2);
+
+void StepperSetup(void) {
+  stepper.setSpeed(10);
+}
+
+void StepperStep(int steps) {
+  stepper.step(steps);
+}
+#endif
+
+#ifdef STEPPER_POLOLU
+void StepperSetup(void) {
+  pinMode(PIN_STEPPER_STBY, OUTPUT);
+  digitalWrite(PIN_STEPPER_STBY, LOW);
+
+  pinMode(PIN_STEPPER_EN, OUTPUT);
+  digitalWrite(PIN_STEPPER_EN, LOW);
+
+  pinMode(PIN_STEPPER_STEP, OUTPUT);
+  digitalWrite(PIN_STEPPER_STEP, LOW);
+
+  pinMode(PIN_STEPPER_DIR, OUTPUT);
+  digitalWrite(PIN_STEPPER_DIR, LOW);
+
+  digitalWrite(PIN_STEPPER_STBY, HIGH);
+}
+
+void StepperStep(int steps) {
+  if (steps >= 0) {
+    digitalWrite(PIN_STEPPER_DIR, LOW);
+  }
+  else {
+    digitalWrite(PIN_STEPPER_DIR, HIGH);
+  }
+  for (int i = 0; i < steps; i++)
+  {
+    digitalWrite(PIN_STEPPER_STEP, HIGH);
+    delay(10);
+    digitalWrite(PIN_STEPPER_STEP, LOW);
+    delay(10);
+  }  
+}
+#endif
+
 
 bool HallSensorRead(void) {
   return !digitalRead(PIN_HALL_SENSOR);
@@ -427,11 +475,13 @@ void DoCalibration() {
 
     if (up_button.just_pressed() || up_button.held()) {
       config.stepper_offset++;
-      stepper.step(1);
+      StepperStep(1);
+      delay(5);
     }
     if (down_button.just_pressed() || down_button.held()) {
       config.stepper_offset--;
-      stepper.step(-1);
+      StepperStep(-1);
+      delay(5);
     }
     if (select_button.just_pressed()) {
       break;
@@ -439,7 +489,7 @@ void DoCalibration() {
     config.stepper_offset = constrain(config.stepper_offset, STEPPER_OFFSET_MIN, STEPPER_OFFSET_MAX);
     DisplayCalibrationStage('C', config.stepper_offset);
     //delay(LOOP_PERIOD);
-    delay(5);
+    delay(1);
   }
   Serial.print("Calibration set to ");
   Serial.println(config.stepper_offset);
@@ -550,16 +600,16 @@ void setup() {
   select_button.Init(PIN_BUTTON_SELECT);
 
   // setup the stepper, and set the speed of the motor to 10 RPMs
-  stepper.setSpeed(10);
+  StepperSetup();
 
   // drive the clock counter clockwise until the hall sensor trips
   if (HallSensorRead()) {
     Serial.println("on top of hall sensor already.  Let's advance one hour...");
-    stepper.step(STEPPER_STEPS);
+    StepperStep(STEPPER_STEPS_1HOUR);
   }
   Serial.println("looking for hall sensor...");
   while (!HallSensorRead()) {
-    stepper.step(1);
+    StepperStep(1);
   }
   
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
@@ -569,7 +619,7 @@ void setup() {
   }
   Serial.print("stepping to zero offset:");
   Serial.println(config.stepper_offset);
-  stepper.step(config.stepper_offset);
+  StepperStep(config.stepper_offset);
   Serial.println("stepping to current time");
 }
 
@@ -625,9 +675,9 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   hall_sensor_old = hall_sensor;
   // Scale the minutes and seconds in a 12-hour span to a stepper position
   // minute-by-minute rotation
-  int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;
+  int32_t stepper_pos_goal = hour * STEPPER_STEPS_1HOUR + minute * STEPPER_STEPS_1HOUR / 60;
   // smooth rotation
-  //int32_t stepper_pos_goal = (hour * STEPPER_STEPS) + (minute * STEPPER_STEPS / 60) + (second * STEPPER_STEPS / (60*60));
+  //int32_t stepper_pos_goal = (hour * STEPPER_STEPS_1HOUR) + (minute * STEPPER_STEPS_1HOUR / 60) + (second * STEPPER_STEPS_1HOUR / (60*60));
 
   // if (printNow) {
   //   Serial.print("hour:");
@@ -643,13 +693,13 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   // rotate the motor clockwise or counter clockwise until we get to the clock position  
   int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);
   if (diff > 0) {
-    stepper.step(1);
+    StepperStep(1);
     stepper_pos_current++;
     if(stepper_pos_current >= STEPPER_STEPS_12HOUR) {
       stepper_pos_current = 0;
     }
   } else if (diff < 0) {
-    stepper.step(-1);
+    StepperStep(-1);
     stepper_pos_current--;
     if(stepper_pos_current < 0) {
       stepper_pos_current = (STEPPER_STEPS_12HOUR - 1);
@@ -708,7 +758,11 @@ void loop() {
   if (led_brightness_old != config.display_brightness) {
     WriteConfigurationToEeprom(config);
   }
+  #ifdef LIGHT_SENSOR_ENABLE
   display.setIntensity(0, constrain(config.display_brightness + brightness_adjust(), LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX));
+  #else
+  display.setIntensity(0, constrain(config.display_brightness, LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX));
+  #endif
 
   // Check the time, and whenever a second has passed, blink the colon and
   // ensure the time is up to date.

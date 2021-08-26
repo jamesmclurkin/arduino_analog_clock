@@ -4,6 +4,20 @@
 #include <Stepper.h>
 #include <EEPROM.h>
 
+//#define STEPPER_POLOLU
+#define STEPPER_ULN2003
+
+#ifdef STEPPER_POLOLU
+  #ifdef STEPPER_ULN2003
+    #error "Pick one stepper type"
+  #endif
+#endif
+
+
+#ifdef STEPPER_ULN2003
+#include <Stepper.h>
+#endif
+
 // example RTC code modified from :
 // https://github.com/Makuna/Rtc/blob/master/examples/DS1307_Simple/DS1307_Simple.ino
 
@@ -30,11 +44,18 @@
 #define LED_BRIGHTNESS_MAX        16
 #define LED_BRIGHTNESS_DEFAULT    6
 
-// Servo pins and constants
+// Stepper pins and constants
+#ifdef STEPPER_ULN2003
 #define PIN_STEPPER_A1            17
 #define PIN_STEPPER_A2            5
 #define PIN_STEPPER_B1            6
 #define PIN_STEPPER_B2            7
+#else
+#define PIN_STEPPER_STBY          17
+#define PIN_STEPPER_EN            16
+#define PIN_STEPPER_STEP          7
+#define PIN_STEPPER_DIR           6
+#endif
 
 #define STEPPER_OFFSET_DEFAULT    150
 #define STEPPER_OFFSET_MIN        0
@@ -418,9 +439,10 @@ void DoCalibration() {
     config.stepper_offset = constrain(config.stepper_offset, STEPPER_OFFSET_MIN, STEPPER_OFFSET_MAX);
     DisplayCalibrationStage('C', config.stepper_offset);
     //delay(LOOP_PERIOD);
-    delay(1);
+    delay(5);
   }
-  Serial.println("Calibration done");
+  Serial.print("Calibration set to ");
+  Serial.println(config.stepper_offset);
   WriteConfigurationToEeprom(config);
 }
 
@@ -448,6 +470,8 @@ void setup() {
 
   // Setup and check the time on the RTC clock
   RtcDateTime time_compiled = RtcDateTime(__DATE__, __TIME__);
+  // Add 3 hours for east coast people
+  time_compiled = time_compiled + (60*60*3);
   //RtcDateTime time_compiled = RtcDateTime("Mar 05 2021", "12:23:16");
 
   if (!Rtc.IsDateTimeValid()) {
@@ -529,15 +553,14 @@ void setup() {
   stepper.setSpeed(10);
 
   // drive the clock counter clockwise until the hall sensor trips
-  Serial.println("looking for hall...");
+  if (HallSensorRead()) {
+    Serial.println("on top of hall sensor already.  Let's advance one hour...");
+    stepper.step(STEPPER_STEPS);
+  }
+  Serial.println("looking for hall sensor...");
   while (!HallSensorRead()) {
-    stepper.step(-1);
+    stepper.step(1);
   }
-  Serial.println("got hall.  looking for end of hall...");
-  while (HallSensorRead()) {
-    stepper.step(-1);
-  }
-  stepper.step(-20);
   
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
   if(config.stepper_offset > STEPPER_OFFSET_MAX) {
@@ -548,7 +571,6 @@ void setup() {
   Serial.println(config.stepper_offset);
   stepper.step(config.stepper_offset);
   Serial.println("stepping to current time");
-  //stepper.step(230);
 }
 
 
@@ -571,6 +593,9 @@ int16_t stepperPosDiff(int16_t pos_current, int16_t pos_goal) {
 }
 
 int32_t stepper_pos_current = 0;
+bool recalibrate_with_hall = false;
+bool hall_sensor_old = false;
+
 // Displays the given time on the minute and second hands, using pre-determined
 // minimum and maximum servo values derived from our calibration process.
 void UpdateStepper(const RtcDateTime& time, bool printNow) {
@@ -582,7 +607,22 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   if(hour == 12) {
     hour = 0;
   }
-  
+  if((hour == 6) && (minute == 0) && pm) {
+    // set the stepper to recalibrate the next time the hall is tripped, right before 12am midnight
+    recalibrate_with_hall = true;
+  }
+
+  bool hall_sensor = HallSensorRead();
+  if(hall_sensor && !hall_sensor_old) {
+    // positive edge on the hall sensor.  It's almost 12:00
+    // is it time to recalibrate?
+    // if(recalibrate_with_hall) {
+    //   stepper_pos_current = STEPPER_STEPS_12HOUR - config.stepper_offset;
+    //   recalibrate_with_hall = false;
+    //   Serial.println("recalibrated stepper position with hall sensor");
+    // }
+  }
+  hall_sensor_old = hall_sensor;
   // Scale the minutes and seconds in a 12-hour span to a stepper position
   // minute-by-minute rotation
   int32_t stepper_pos_goal = hour * STEPPER_STEPS + minute * STEPPER_STEPS / 60;

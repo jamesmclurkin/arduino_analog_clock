@@ -5,8 +5,8 @@
 #include <EEPROM.h>
 
 //#define LIGHT_SENSOR_ENABLE
-#define STEPPER_POLOLU
-//#define STEPPER_ULN2003
+//#define STEPPER_POLOLU
+#define STEPPER_ULN2003
 
 #ifdef STEPPER_POLOLU
   #ifdef STEPPER_ULN2003
@@ -27,6 +27,8 @@
 
 // Daylight Savings time calculation:
 // https://stackoverflow.com/questions/5590429/calculating-daylight-saving-time-from-only-date
+
+#define TIME_HOURS_OFFSET     0
 
 // Pin 13 has an LED connected on most Arduino boards, including this clock
 #define PIN_BLINKY_LED    13
@@ -61,8 +63,8 @@
 #endif
 
 #define STEPPER_OFFSET_DEFAULT    150
-#define STEPPER_OFFSET_MIN        -400
-#define STEPPER_OFFSET_MAX        400
+#define STEPPER_OFFSET_MIN        (-400)
+#define STEPPER_OFFSET_MAX        800
 #define STEPPER_STEPS_1HOUR       2052
 #define STEPPER_STEPS_12HOUR      (2052 * 12)
 
@@ -457,7 +459,7 @@ bool HallSensorRead(void) {
 
 // Writes the given stage ID and 8 bit value to the LED display, used for
 // showing which step of the calibration process we are on.
-void DisplayCalibrationStage(char stage, uint8_t value) {
+void DisplayCalibrationStage(char stage, int32_t value) {
   display.setChar(0, 0, stage, false);
   for (int i = 0; i < 3; ++i) {
     display.setDigit(0, 3 - i, value % 10, false);
@@ -523,7 +525,7 @@ void setup() {
   // Setup and check the time on the RTC clock
   RtcDateTime time_compiled = RtcDateTime(__DATE__, __TIME__);
   // Add 3 hours for east coast people
-  time_compiled = time_compiled + (60*60*3);
+  time_compiled = time_compiled + (60 * 60 * TIME_HOURS_OFFSET);
   //RtcDateTime time_compiled = RtcDateTime("Mar 05 2021", "12:23:16");
 
   if (!Rtc.IsDateTimeValid()) {
@@ -610,8 +612,19 @@ void setup() {
     StepperStep(STEPPER_STEPS_1HOUR);
   }
   Serial.println("looking for hall sensor...");
+  
+  int display_count = 0;
   while (!HallSensorRead()) {
     StepperStep(1);
+    //display.clearDisplay(0);
+    int litchar = ((display_count++ / 75) % 4);
+    for (int i = 0; i < 4; i++) {
+      if (i == litchar) {
+        display.setChar(0, i, '8', false);
+      } else {
+        display.setChar(0, i, ' ', false);
+      }
+    }  
   }
   
   // we just tripped the hall sensor.  advance the stepper the saved offset to take it to 12:00
@@ -681,16 +694,16 @@ void UpdateStepper(const RtcDateTime& time, bool printNow) {
   // smooth rotation
   //int32_t stepper_pos_goal = (hour * STEPPER_STEPS_1HOUR) + (minute * STEPPER_STEPS_1HOUR / 60) + (second * STEPPER_STEPS_1HOUR / (60*60));
 
-   if (printNow) {
-     Serial.print("hour:");
-     Serial.print(hour);
-     Serial.print("  minute:");
-     Serial.print(minute);
-     Serial.print("  stepper_pos_goal:");
-     Serial.print(stepper_pos_goal);
-     Serial.print("  stepper_pos_current:");
-     Serial.println(stepper_pos_current);
-   }
+  //  if (printNow) {
+  //    Serial.print("hour:");
+  //    Serial.print(hour);
+  //    Serial.print("  minute:");
+  //    Serial.print(minute);
+  //    Serial.print("  stepper_pos_goal:");
+  //    Serial.print(stepper_pos_goal);
+  //    Serial.print("  stepper_pos_current:");
+  //    Serial.println(stepper_pos_current);
+  //  }
   
   // rotate the motor clockwise or counter clockwise until we get to the clock position  
   int16_t diff = stepperPosDiff(stepper_pos_current, stepper_pos_goal);

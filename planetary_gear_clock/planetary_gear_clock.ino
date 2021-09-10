@@ -617,7 +617,7 @@ void setup() {
   while (!HallSensorRead()) {
     StepperStep(1);
     //display.clearDisplay(0);
-    int litchar = ((display_count++ / 75) % 4);
+    int litchar = ((display_count++ / 50) % 4);
     for (int i = 0; i < 4; i++) {
       if (i == litchar) {
         display.setChar(0, i, '8', false);
